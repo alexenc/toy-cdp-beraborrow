@@ -58,6 +58,117 @@ contract ToyCdpTest is Test {
         vm.stopPrank();
     }
 
+    function test_ClosePosition() public {
+        vm.startPrank(USER);
+
+        // First open a position
+        cdpEngine.openPosition(COLLATERAL_AMOUNT, DEBT_AMOUNT);
+
+        uint256 userInitialWethBalance = weth.balanceOf(USER);
+        uint256 userInitialStableBalance = stablecoin.balanceOf(USER);
+
+        // Approve stable for repayment
+        stablecoin.approve(address(cdpEngine), type(uint256).max);
+
+        cdpEngine.closePosition();
+
+        // User should get back their collateral
+        assertEq(
+            weth.balanceOf(USER),
+            userInitialWethBalance + COLLATERAL_AMOUNT
+        );
+
+        // User should have paid back their debt
+        assertEq(
+            stablecoin.balanceOf(USER),
+            userInitialStableBalance - DEBT_AMOUNT
+        );
+
+        vm.stopPrank();
+    }
+
+    function test_liquidatePosition() public {
+        vm.startPrank(USER);
+        address LIQUIDATOR = makeAddr("user");
+        // Create liquidator account with some ETH
+
+        vm.deal(LIQUIDATOR, 100 ether);
+
+        // First open a position
+        cdpEngine.openPosition(COLLATERAL_AMOUNT, DEBT_AMOUNT);
+
+        // Switch to liquidator account
+        vm.stopPrank();
+        vm.startPrank(LIQUIDATOR);
+
+        // Give liquidator enough stable to repay the debt
+        deal(address(stablecoin), LIQUIDATOR, DEBT_AMOUNT);
+        stablecoin.approve(address(cdpEngine), type(uint256).max);
+
+        // Store initial balances
+        uint256 liquidatorInitialWethBalance = weth.balanceOf(LIQUIDATOR);
+        uint256 liquidatorInitialStableBalance = stablecoin.balanceOf(
+            LIQUIDATOR
+        );
+
+        // Drop ETH price to make position liquidatable
+        vm.stopPrank();
+        ethOracle.updatePrice(1000e18); // Significant price drop
+
+        vm.startPrank(LIQUIDATOR);
+        // Liquidate the position
+        cdpEngine.liquidate(USER);
+
+        // Liquidator should receive the collateral
+        assertEq(
+            weth.balanceOf(LIQUIDATOR),
+            liquidatorInitialWethBalance + COLLATERAL_AMOUNT
+        );
+
+        // Liquidator should have paid the debt
+        assertEq(
+            stablecoin.balanceOf(LIQUIDATOR),
+            liquidatorInitialStableBalance - DEBT_AMOUNT
+        );
+
+        vm.stopPrank();
+    }
+
+    function test_ClosePositionWithInterest() public {
+        vm.startPrank(USER);
+
+        // First open a position
+        cdpEngine.openPosition(COLLATERAL_AMOUNT, DEBT_AMOUNT);
+
+        uint256 userInitialWethBalance = weth.balanceOf(USER);
+        uint256 userInitialStableBalance = stablecoin.balanceOf(USER);
+
+        // Approve stable for repayment
+        stablecoin.approve(address(cdpEngine), type(uint256).max);
+
+        // Advance time by 1 year to accrue interest at 5% APR
+        vm.warp(block.timestamp + 365 days);
+
+        // Expected debt after 1 year with 5% interest
+        uint256 expectedDebt = (DEBT_AMOUNT * 105) / 100;
+
+        cdpEngine.closePosition();
+
+        // User should get back their collateral
+        assertEq(
+            weth.balanceOf(USER),
+            userInitialWethBalance + COLLATERAL_AMOUNT
+        );
+
+        // User should have paid back their debt plus interest
+        assertEq(
+            stablecoin.balanceOf(USER),
+            userInitialStableBalance - expectedDebt
+        );
+
+        vm.stopPrank();
+    }
+
     function testFail_OpenPositionWithInsufficientCollateral() public {
         vm.startPrank(USER);
         // Try to borrow too much STABLE for the collateral amount

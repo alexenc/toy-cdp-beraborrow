@@ -26,7 +26,6 @@ contract ToyCDPEngine {
      * and iRates accounting
      */
     struct Position {
-        address user;
         uint256 collateralAmount;
         uint256 debtAmount;
         uint256 useInterestIndex;
@@ -53,7 +52,7 @@ contract ToyCDPEngine {
     STABLE immutable i_stablecoin;
 
     address immutable weth;
-    uint256 constant collateralRatio = 1100;
+    uint256 constant MCR = 1100;
     uint256 constant ratioprecision = 1000;
     uint256 totalProtocolCollateral;
 
@@ -66,6 +65,19 @@ contract ToyCDPEngine {
 
     /// EVENTS
     event CollateralDeposited(address indexed user, uint256 amount);
+
+    event PosotionClosed(
+        address indexed user,
+        uint256 collateralAmount,
+        uint256 debtAmount
+    );
+
+    event Liquidation(
+        address indexed liquidator,
+        address indexed liquidatedUser,
+        uint256 collateralAmount,
+        uint256 debtAmount
+    );
 
     constructor(
         address _stableAddress,
@@ -84,15 +96,12 @@ contract ToyCDPEngine {
         uint256 _amount,
         uint256 _debtAmount
     ) external moreThanZero(_amount) {
-        _updateGlogalInterestIndex();
+        _updateGlobalInterestIndex();
         uint256 collateralValue = _getCollateralUSDVaule(_amount);
 
         // Check if desired debt amount maintains minimum collateralization ratio
         // Multiply by ratio precision since collateralRatio includes it
-        // TODO move that to internal function like check postion cratio
-        if (
-            (collateralValue * ratioprecision) / _debtAmount < collateralRatio
-        ) {
+        if (_getPositionCollateralRatio(collateralValue, _debtAmount) <= MCR) {
             revert("Collateral ratio too low");
         }
 
@@ -103,8 +112,7 @@ contract ToyCDPEngine {
         Position memory userPosition = Position({
             collateralAmount: _amount,
             debtAmount: _debtAmount,
-            user: msg.sender,
-            useInterestIndex: block.timestamp
+            useInterestIndex: interestIndex
         });
 
         userPositions[msg.sender] = userPosition;
@@ -113,44 +121,85 @@ contract ToyCDPEngine {
         emit CollateralDeposited(msg.sender, _amount);
 
         // Mint requested amount of stable tokens to user
-        _mintStable(msg.sender, _amount);
+        _mintStable(msg.sender, _debtAmount);
     }
 
     /**
      * @notice close a user position repaying back its debt + interest and getting back its collateral
      */
     function closePosition() external {
-        _updateGlogalInterestIndex();
+        _updateGlobalInterestIndex();
         _accrueUserInterest(msg.sender);
 
         Position memory userPosition = userPositions[msg.sender];
         // Get user's collateral balance
         uint256 userCollateral = userPosition.collateralAmount;
-        // TODO check user healt factor if cr lower than min revert as user its not allowed
-        if (userCollateral == 0) revert("No position to close");
-        // TODO position should have accrued debt as interal param
 
-        // Get user's debt balance from STABLE contract
+        if (userCollateral == 0) revert("No position to close");
+
+        uint256 collateralValue = _getCollateralUSDVaule(userCollateral);
         uint256 userDebt = userPosition.debtAmount;
+
+        if (_getPositionCollateralRatio(collateralValue, userDebt) <= MCR)
+            revert("Position below MCR");
 
         // Transfer STABLE from user back to contract and burn it
         i_stablecoin.transferFrom(msg.sender, address(this), userDebt);
-        // @audit q - what to do with surplus satble being burned
-        i_stablecoin.burn(userDebt);
-
+        _burnStable(userDebt);
         // Transfer collateral back to user
         _redeemCollateral(msg.sender, userCollateral);
 
         // Update state
         delete userPositions[msg.sender];
         totalProtocolCollateral -= userCollateral;
+        emit PosotionClosed(msg.sender, userCollateral, userDebt);
     }
-    function liquidate() external {
-        _updateGlogalInterestIndex();
-        // when a user position is subsceptible for being liquidated a user can call liquidate
-        // this is possible when cr ratio of possition its below the minimum collateral ratio
-        // the user who liquidates the position receibes the liquidated user collateral by paying back the debt
-        // need to accrue interest on user positions
+
+    /*
+     *  @notice function to liquidate insolvent positions, maxrepayamount to cover mev slippage
+     * @param positionToLiquidate user position to be liquidated
+     * @paramz maxrepayAmount Stable amount to be paid by liquidator
+     */
+    function liquidate(address positionToLiquidate) external {
+        require(
+            msg.sender != positionToLiquidate,
+            "User can not liquidate its position"
+        );
+        _updateGlobalInterestIndex();
+
+        // @audit q maube return the whole userPosition struct to imporve gas eficiency
+        uint256 userDebt = _accrueUserInterest(positionToLiquidate);
+
+        Position memory userPosition = userPositions[positionToLiquidate];
+
+        uint256 userCollateral = userPosition.collateralAmount;
+
+        if (userCollateral == 0) revert("No position to liquidate");
+
+        uint256 collateralValue = _getCollateralUSDVaule(userCollateral);
+
+        require(
+            _isLiquidatable(collateralValue, userDebt),
+            "Position not subsceptible to liquidation"
+        );
+
+        // Transfer STABLE from liquidator to contract and burn it
+        i_stablecoin.transferFrom(msg.sender, address(this), userDebt);
+        _burnStable(userDebt);
+
+        // Transfer liquidated collateral to liquidator
+        _redeemCollateral(msg.sender, userCollateral);
+
+        // Update state
+        delete userPositions[positionToLiquidate];
+        totalProtocolCollateral -= userCollateral;
+
+        emit Liquidation(
+            msg.sender,
+            positionToLiquidate,
+            userCollateral,
+            userDebt
+        );
     }
 
     /*
@@ -174,7 +223,9 @@ contract ToyCDPEngine {
     /**
      * burns selected amount of STABLE used when liquidating or closing a position
      */
-    function _burnStable(uint256 _amount) internal {}
+    function _burnStable(uint256 _amount) internal {
+        i_stablecoin.burn(_amount);
+    }
 
     /**
      * mints selected amount of STABLE aka user debt
@@ -188,14 +239,16 @@ contract ToyCDPEngine {
      * @param _amount amount of weth to be sent
      * @param _user user that will receive the collateral
      */
-    function _redeemCollateral(address _user, uint256 _amount) internal {}
+    function _redeemCollateral(address _user, uint256 _amount) internal {
+        IERC20(weth).transfer(_user, _amount);
+    }
 
     /**
      * @notice function that updates the global interest index
      * and the last interest update.
      *
      */
-    function _updateGlogalInterestIndex() internal {
+    function _updateGlobalInterestIndex() internal {
         uint256 timeElapsed = block.timestamp - lastInterestUpdate;
         if (timeElapsed == 0) return;
         //calculate interest factor for elapsed time in anually terms
@@ -209,6 +262,7 @@ contract ToyCDPEngine {
     /**
      * @notice function that updates a user's debt with accrued interest
      * updates the user position with new debt amount and interest index
+     * returns the debt the user has with interest applied
      */
     function _accrueUserInterest(address user) internal returns (uint256) {
         Position storage position = userPositions[user];
@@ -225,6 +279,17 @@ contract ToyCDPEngine {
         return currentDebt;
     }
 
+    function _isLiquidatable(
+        uint256 collateralValue,
+        uint256 debtAmount
+    ) internal view returns (bool) {
+        // Calculate collateral ratio
+        uint collateralRatio = (collateralValue * ratioprecision) / debtAmount;
+
+        // Check if below the liquidation threshold
+        return collateralRatio < MCR;
+    }
+
     /**
      * @notice function that given a token and an amount returns its value in usd
      * this current implementation uses the MockETHOracle
@@ -237,5 +302,14 @@ contract ToyCDPEngine {
         return collateralValue;
     }
 
-    // TODO probably getters of user position value to improve readability and updating etc
+    /*
+     * @notice function that returns the collareral ratio of a given position
+     *
+     */
+    function _getPositionCollateralRatio(
+        uint256 _collateralValue,
+        uint256 _debt
+    ) internal view returns (uint256) {
+        return (_collateralValue * ratioprecision) / _debt;
+    }
 }
