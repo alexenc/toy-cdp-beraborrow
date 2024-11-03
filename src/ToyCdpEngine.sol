@@ -5,6 +5,8 @@ pragma solidity ^0.8.24;
 import {STABLE} from "./STABLE.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MockEthOracle} from "./libraries/MockEthOracle.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {console} from "forge-std/console.sol";
 
 /**
  * @title ToyCDPEngine
@@ -14,6 +16,7 @@ import {MockEthOracle} from "./libraries/MockEthOracle.sol";
  * @notice this contract is the core of the whole ToyCDP protocol
  */
 contract ToyCDPEngine {
+    using SafeERC20 for IERC20;
     ///////////////
     // ERRORS   //
     ///////////////
@@ -28,7 +31,7 @@ contract ToyCDPEngine {
     struct Position {
         uint256 collateralAmount;
         uint256 debtAmount;
-        uint256 useInterestIndex;
+        uint256 userInterestIndex;
     }
 
     ///////////////
@@ -52,19 +55,23 @@ contract ToyCDPEngine {
     STABLE immutable i_stablecoin;
 
     address immutable weth;
-    uint256 constant MCR = 1100;
-    uint256 constant ratioprecision = 1000;
+    uint256 constant MCR = 11000; // MCR 110%
+    uint256 constant ratioprecision = 10000;
     uint256 totalProtocolCollateral;
 
     // interest accounting variables
-    uint256 interestRate = 5; // 5%
+    uint256 interestRate = 5; // 5.00% (500/100)
     uint256 interestIndex = 1e18;
     uint256 lastInterestUpdate = block.timestamp;
 
     MockEthOracle ethPriceOracle;
 
     /// EVENTS
-    event CollateralDeposited(address indexed user, uint256 amount);
+    event PositionCreated(
+        address indexed user,
+        uint256 collateralAmount,
+        uint256 _debtAmount
+    );
 
     event PosotionClosed(
         address indexed user,
@@ -97,28 +104,34 @@ contract ToyCDPEngine {
         uint256 _debtAmount
     ) external moreThanZero(_amount) {
         _updateGlobalInterestIndex();
+        Position memory userPosition = userPositions[msg.sender];
+        if (userPosition.collateralAmount > 0) {
+            revert("User already has an existing position");
+        }
+
+        _updateGlobalInterestIndex();
         uint256 collateralValue = _getCollateralUSDVaule(_amount);
 
         // Check if desired debt amount maintains minimum collateralization ratio
         // Multiply by ratio precision since collateralRatio includes it
-        if (_getPositionCollateralRatio(collateralValue, _debtAmount) <= MCR) {
+        if (_getPositionCollateralRatio(collateralValue, _debtAmount) < MCR) {
             revert("Collateral ratio too low");
         }
 
         // Transfer WETH from user to contract
-        IERC20(weth).transferFrom(msg.sender, address(this), _amount);
+        IERC20(weth).transferFrom(msg.sender, address(this), _amount); // @audit use safetransferFrom
 
         // Update user's collateral balance
-        Position memory userPosition = Position({
+        userPosition = Position({
             collateralAmount: _amount,
             debtAmount: _debtAmount,
-            useInterestIndex: interestIndex
+            userInterestIndex: interestIndex
         });
 
         userPositions[msg.sender] = userPosition;
         totalProtocolCollateral += _amount;
-        // @audit q maybe update also debt amount?
-        emit CollateralDeposited(msg.sender, _amount);
+
+        emit PositionCreated(msg.sender, _amount, _debtAmount);
 
         // Mint requested amount of stable tokens to user
         _mintStable(msg.sender, _debtAmount);
@@ -140,18 +153,19 @@ contract ToyCDPEngine {
         uint256 collateralValue = _getCollateralUSDVaule(userCollateral);
         uint256 userDebt = userPosition.debtAmount;
 
-        if (_getPositionCollateralRatio(collateralValue, userDebt) <= MCR)
+        if (_getPositionCollateralRatio(collateralValue, userDebt) < MCR)
             revert("Position below MCR");
 
         // Transfer STABLE from user back to contract and burn it
         i_stablecoin.transferFrom(msg.sender, address(this), userDebt);
         _burnStable(userDebt);
-        // Transfer collateral back to user
-        _redeemCollateral(msg.sender, userCollateral);
 
         // Update state
         delete userPositions[msg.sender];
         totalProtocolCollateral -= userCollateral;
+        // follow CEI pattern
+        // Transfer collateral back to user
+        _redeemCollateral(msg.sender, userCollateral);
         emit PosotionClosed(msg.sender, userCollateral, userDebt);
     }
 
@@ -167,7 +181,6 @@ contract ToyCDPEngine {
         );
         _updateGlobalInterestIndex();
 
-        // @audit q maube return the whole userPosition struct to imporve gas eficiency
         uint256 userDebt = _accrueUserInterest(positionToLiquidate);
 
         Position memory userPosition = userPositions[positionToLiquidate];
@@ -183,16 +196,16 @@ contract ToyCDPEngine {
             "Position not subsceptible to liquidation"
         );
 
+        // Update state
+        delete userPositions[positionToLiquidate];
+        totalProtocolCollateral -= userCollateral;
+
         // Transfer STABLE from liquidator to contract and burn it
         i_stablecoin.transferFrom(msg.sender, address(this), userDebt);
         _burnStable(userDebt);
 
         // Transfer liquidated collateral to liquidator
         _redeemCollateral(msg.sender, userCollateral);
-
-        // Update state
-        delete userPositions[positionToLiquidate];
-        totalProtocolCollateral -= userCollateral;
 
         emit Liquidation(
             msg.sender,
@@ -249,13 +262,20 @@ contract ToyCDPEngine {
      *
      */
     function _updateGlobalInterestIndex() internal {
+        // Calculate time elapsed since last interest update
         uint256 timeElapsed = block.timestamp - lastInterestUpdate;
         if (timeElapsed == 0) return;
-        //calculate interest factor for elapsed time in anually terms
-        uint256 interestFactor = (1e18 +
-            ((interestRate * timeElapsed) / 365 days / 100));
-        interestIndex = (interestIndex * interestFactor) / 1e18;
 
+        // Calculate interest factor using simple interest formula
+        // interestRate is in percentage terms (e.g. 5 for 5%)
+        // Scale up by 1e18 for precision
+        uint256 interestFactor = 1e18 +
+            ((interestRate * timeElapsed * 1e18) / (365 days * 100));
+
+        // Update global interest index by multiplying by interest factor
+        // Divide by 1e18 to remove scaling factor
+        interestIndex = (interestIndex * interestFactor) / 1e18;
+        // Update last interest timestamp
         lastInterestUpdate = block.timestamp;
     }
 
@@ -268,13 +288,12 @@ contract ToyCDPEngine {
         Position storage position = userPositions[user];
         if (position.debtAmount == 0) return 0;
 
-        // Calculate total debt with interest
         uint256 currentDebt = (position.debtAmount * interestIndex) /
-            position.useInterestIndex;
+            position.userInterestIndex;
 
         // Update position with new debt and current interest index
         position.debtAmount = currentDebt;
-        position.useInterestIndex = interestIndex;
+        position.userInterestIndex = interestIndex;
 
         return currentDebt;
     }

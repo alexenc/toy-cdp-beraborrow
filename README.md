@@ -29,3 +29,5 @@ When a user position is created it keeps track of the cumulative interexIndex of
 2. fees on borrowing + repaying to avoid minting and burnign cascade effects due to arbitraje
 3. interest rate manipulation depending on market conditions
 4. System recovery mode
+5. add the update position logic and why it is useful
+6. implement some kind od after market for STABLE to cover repayments
