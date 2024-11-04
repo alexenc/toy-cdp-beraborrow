@@ -7,6 +7,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MockEthOracle} from "./libraries/MockEthOracle.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {console} from "forge-std/console.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
  * @title ToyCDPEngine
@@ -15,7 +16,7 @@ import {console} from "forge-std/console.sol";
  *
  * @notice this contract is the core of the whole ToyCDP protocol
  */
-contract ToyCDPEngine {
+contract ToyCDPEngine is Ownable {
     using SafeERC20 for IERC20;
     ///////////////
     // ERRORS   //
@@ -53,14 +54,14 @@ contract ToyCDPEngine {
     mapping(address user => Position position) private userPositions;
 
     STABLE immutable i_stablecoin;
-
     address immutable weth;
-    uint256 constant MCR = 11000; // MCR 110%
-    uint256 constant ratioprecision = 10000;
+
+    uint256 public MCR = 11000; // MCR 110%
+    uint256 public ratioprecision = 10000;
     uint256 totalProtocolCollateral;
 
     // interest accounting variables
-    uint256 interestRate = 5; // 5.00% (500/100)
+    uint256 interestRate = 5; // 5.00%
     uint256 interestIndex = 1e18;
     uint256 lastInterestUpdate = block.timestamp;
 
@@ -86,11 +87,13 @@ contract ToyCDPEngine {
         uint256 debtAmount
     );
 
+    event InterestRateUpdated(uint256 oldRate, uint256 newRate);
+
     constructor(
         address _stableAddress,
         address _weth,
         address _ethOracleAddress
-    ) {
+    ) Ownable(msg.sender) {
         i_stablecoin = STABLE(_stableAddress);
         weth = _weth;
         ethPriceOracle = MockEthOracle(_ethOracleAddress);
@@ -119,7 +122,7 @@ contract ToyCDPEngine {
         }
 
         // Transfer WETH from user to contract
-        IERC20(weth).transferFrom(msg.sender, address(this), _amount); // @audit use safetransferFrom
+        IERC20(weth).safeTransferFrom(msg.sender, address(this), _amount); // @audit use safetransferFrom
 
         // Update user's collateral balance
         userPosition = Position({
@@ -157,7 +160,12 @@ contract ToyCDPEngine {
             revert("Position below MCR");
 
         // Transfer STABLE from user back to contract and burn it
-        i_stablecoin.transferFrom(msg.sender, address(this), userDebt);
+        IERC20(i_stablecoin).safeTransferFrom(
+            msg.sender,
+            address(this),
+            userDebt
+        );
+
         _burnStable(userDebt);
 
         // Update state
@@ -201,7 +209,11 @@ contract ToyCDPEngine {
         totalProtocolCollateral -= userCollateral;
 
         // Transfer STABLE from liquidator to contract and burn it
-        i_stablecoin.transferFrom(msg.sender, address(this), userDebt);
+        IERC20(i_stablecoin).safeTransferFrom(
+            msg.sender,
+            address(this),
+            userDebt
+        );
         _burnStable(userDebt);
 
         // Transfer liquidated collateral to liquidator
@@ -214,6 +226,36 @@ contract ToyCDPEngine {
             userDebt
         );
     }
+
+    /**
+     * @notice Updates the protocol interest rate
+     * @param _newRate New interest rate (between 0-5)
+     * @dev Rate is expressed as a whole number, e.g. 5 = 5.00%
+     */
+    function updateInterestRate(uint256 _newRate) external onlyOwner {
+        if (_newRate > 5) {
+            revert("Invalid interest rate");
+        }
+        uint256 oldRate = interestRate;
+        interestRate = _newRate;
+        emit InterestRateUpdated(oldRate, _newRate);
+    }
+
+    /**
+     * @notice Updates the Minimum Collateralization Ratio (MCR)
+     * @param _newMcr New MCR value (between 11000-15000, representing 110%-150%)
+     * @dev MCR is expressed in basis points, e.g. 11000 = 110%
+     */
+    function updateMcr(uint256 _newMcr) external onlyOwner {
+        if (_newMcr < 11000 || _newMcr > 15000) {
+            revert("MCR must be between 110% and 150%");
+        }
+        uint256 oldMcr = MCR;
+        MCR = _newMcr;
+        emit McrUpdated(oldMcr, _newMcr);
+    }
+
+    event McrUpdated(uint256 oldMcr, uint256 newMcr);
 
     /*
      * @notice function that returns the total collateral ratio of the protocol
@@ -330,5 +372,31 @@ contract ToyCDPEngine {
         uint256 _debt
     ) internal view returns (uint256) {
         return (_collateralValue * ratioprecision) / _debt;
+    }
+
+    /**
+     * @notice Returns the current collateral ratio for a user's position
+     * @param user The address of the user whose position to check
+     * @return The collateral ratio of the user's position, scaled by ratioprecision
+     */
+    function getPositionCollateralRatio(
+        address user
+    ) public view returns (uint256) {
+        Position memory position = userPositions[user];
+        if (position.debtAmount == 0) return 0;
+
+        uint256 collateralValue = _getCollateralUSDVaule(
+            position.collateralAmount
+        );
+        return
+            _getPositionCollateralRatio(collateralValue, position.debtAmount);
+    }
+
+    /**
+     * @notice Returns the total USD value of all collateral in the protocol
+     * @return The total value of protocol collateral in USD terms
+     */
+    function getTotalCollateralValue() public view returns (uint256) {
+        return _getCollateralUSDVaule(totalProtocolCollateral);
     }
 }

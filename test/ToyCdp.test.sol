@@ -87,6 +87,54 @@ contract ToyCdpTest is Test {
         vm.stopPrank();
     }
 
+    function test_InterestAccrualCorrectAccountingAfterRateChange() public {
+        vm.startPrank(USER);
+
+        // First open a position
+        cdpEngine.openPosition(COLLATERAL_AMOUNT, DEBT_AMOUNT);
+
+        // Fast forward 1 year
+        vm.warp(block.timestamp + 365 days);
+
+        // Change interest rate from 5% to 3%
+        vm.stopPrank();
+        address USER2 = makeAddr("user2");
+        vm.startPrank(USER2);
+
+        // Give USER2 some WETH
+        deal(address(weth), USER2, COLLATERAL_AMOUNT);
+        weth.approve(address(cdpEngine), COLLATERAL_AMOUNT);
+
+        // Open small position to trigger interest accounting
+        cdpEngine.openPosition(COLLATERAL_AMOUNT, DEBT_AMOUNT);
+        vm.stopPrank();
+        cdpEngine.updateInterestRate(3);
+        // Create a second user to open position and trigger interest accounting
+
+        vm.startPrank(USER);
+
+        // Fast forward another year
+        vm.warp(block.timestamp + 365 days);
+        // Approve stable for repayment
+        stablecoin.approve(address(cdpEngine), type(uint256).max);
+
+        // Calculate expected debt after interest
+        // First year at 5%: DEBT_AMOUNT * 1.05
+        // Second year at 3%: (DEBT_AMOUNT * 1.05) * 1.03
+        // 10815e17
+        // Deal user the additional stable needed to cover accrued interest
+        deal(address(stablecoin), USER, 10815e17);
+
+        uint256 userInitialStableBalance = stablecoin.balanceOf(USER);
+
+        cdpEngine.closePosition();
+
+        // User should have paid back their debt with accrued interest
+        assertEq(stablecoin.balanceOf(USER), 0);
+
+        vm.stopPrank();
+    }
+
     function test_liquidatePosition() public {
         vm.startPrank(USER);
         address LIQUIDATOR = makeAddr("liquidator");
