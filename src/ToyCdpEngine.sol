@@ -394,6 +394,16 @@ contract ToyCDPEngine is Ownable {
     }
 
     /**
+     * @notice Returns the current debt amount for a user's position
+     * @param user The address of the user whose debt to check
+     * @return The debt amount for the user's position
+     */
+    function getUserDebt(address user) public view returns (uint256) {
+        Position memory position = userPositions[user];
+        return position.debtAmount;
+    }
+
+    /**
      * @notice Returns the total USD value of all collateral in the protocol
      * @return The total value of protocol collateral in USD terms
      */

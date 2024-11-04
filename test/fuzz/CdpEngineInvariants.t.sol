@@ -1,6 +1,6 @@
 // TODO Finish invariant testing
 // SPDX-License-Identifier: MIT
-/*pragma solidity ^0.8.24;
+pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
@@ -28,7 +28,7 @@ contract CdpEngineInvariantsTest is StdInvariant, Test {
         );
         stablecoin.transferOwnership(address(cdpEngine));
 
-        handler = new CdpEngineHandler(cdpEngine, stablecoin);
+        handler = new CdpEngineHandler(cdpEngine, stablecoin, weth, ethOracle);
         targetContract(address(handler));
     }
 
@@ -37,14 +37,9 @@ contract CdpEngineInvariantsTest is StdInvariant, Test {
         uint256 totalSupply = stablecoin.totalSupply();
 
         // Get total protocol collateral value in USD
-        uint256 totalCollateralValueInUsd = (cdpEngine.getProtocolCr() *
-            totalSupply) / 1e4;
+        uint256 totalCollateralValueInUsd = cdpEngine.getTotalCollateralValue();
 
         // Protocol total USD value should be greater than total supply
-        assertGe(
-            totalCollateralValueInUsd,
-            totalSupply,
-            "Protocol USD value < Supply"
-        );
+        assert(totalCollateralValueInUsd >= totalSupply);
     }
-} */
+}
