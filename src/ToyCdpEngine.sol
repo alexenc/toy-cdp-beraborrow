@@ -233,6 +233,7 @@ contract ToyCDPEngine is Ownable {
      * @dev Rate is expressed as a whole number, e.g. 5 = 5.00%
      */
     function updateInterestRate(uint256 _newRate) external onlyOwner {
+        _updateGlobalInterestIndex();
         if (_newRate > 5) {
             revert("Invalid interest rate");
         }
