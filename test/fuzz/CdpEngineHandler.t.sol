@@ -7,6 +7,7 @@ import {STABLE} from "../../src/STABLE.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MockEthOracle} from "../../src/libraries/MockEthOracle.sol";
 import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
+import {console} from "forge-std/console.sol";
 
 contract CdpEngineHandler is Test {
     ToyCDPEngine public cdpEngine;
@@ -45,6 +46,8 @@ contract CdpEngineHandler is Test {
 
         // Select operator using helper function
         address operator = selectOperator(collateralAmount);
+        // Skip if operator already has a position
+        if (hasPosition[operator]) return;
 
         // Check collateral ratio is above 110%
         uint256 ethPrice = ethOracle.getPrice();
@@ -58,6 +61,8 @@ contract CdpEngineHandler is Test {
         weth.approve(address(cdpEngine), collateralAmount);
 
         cdpEngine.openPosition(collateralAmount, debtAmount);
+        console.log("open");
+
         if (!hasPosition[operator]) {
             hasPosition[operator] = true;
         }
@@ -92,6 +97,8 @@ contract CdpEngineHandler is Test {
         cdpEngine.closePosition();
         hasPosition[operator] = false;
         // Remove operator from active users array
+        console.log("close");
+
         vm.stopPrank();
     }
 
@@ -122,7 +129,7 @@ contract CdpEngineHandler is Test {
             // Attempt liquidation
             cdpEngine.liquidate(positionOwner);
             hasPosition[positionOwner] = false;
-
+            console.log("liquidation");
             vm.stopPrank();
         }
     }

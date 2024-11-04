@@ -9,6 +9,7 @@ import {STABLE} from "../../src/STABLE.sol";
 import {MockEthOracle} from "../../src/libraries/MockEthOracle.sol";
 import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
 import {CdpEngineHandler} from "./CdpEngineHandler.t.sol";
+import {console} from "forge-std/console.sol";
 
 contract CdpEngineInvariantsTest is StdInvariant, Test {
     ToyCDPEngine public cdpEngine;
@@ -38,7 +39,6 @@ contract CdpEngineInvariantsTest is StdInvariant, Test {
 
         // Get total protocol collateral value in USD
         uint256 totalCollateralValueInUsd = cdpEngine.getTotalCollateralValue();
-
         // Protocol total USD value should be greater than total supply
         assert(totalCollateralValueInUsd >= totalSupply);
     }

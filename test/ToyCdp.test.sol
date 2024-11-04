@@ -101,13 +101,6 @@ contract ToyCdpTest is Test {
         address USER2 = makeAddr("user2");
         vm.startPrank(USER2);
 
-        // Give USER2 some WETH
-        deal(address(weth), USER2, COLLATERAL_AMOUNT);
-        weth.approve(address(cdpEngine), COLLATERAL_AMOUNT);
-
-        // Open small position to trigger interest accounting
-        cdpEngine.openPosition(COLLATERAL_AMOUNT, DEBT_AMOUNT);
-        vm.stopPrank();
         cdpEngine.updateInterestRate(3);
         // Create a second user to open position and trigger interest accounting
 
