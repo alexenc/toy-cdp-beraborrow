@@ -109,6 +109,20 @@ The contract emits several events to log important actions:
 
 - `McrUpdated`: Emitted when the minimum collateralization ratio is updated.
 
+### 5. Testing
+
+The contract includes comprehensive test coverage including unit tests and invariant tests. Here's how to run the tests:
+
+#### Running Unit Tests
+
+To run invariant test:
+
+`forge test --match-contract "CdpEngineInvariantsTest" --match-test "invariant_protocolMustHaveMoreUSDValueThanSupply" -vvv`
+
+To run unit test:
+
+`forge test -vvv`
+
 ## Potential economic flaws and possible ways to fix them
 
 ### 1. Liquidation Incentives

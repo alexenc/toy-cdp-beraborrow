@@ -61,7 +61,6 @@ contract CdpEngineHandler is Test {
         weth.approve(address(cdpEngine), collateralAmount);
 
         cdpEngine.openPosition(collateralAmount, debtAmount);
-        console.log("open");
 
         if (!hasPosition[operator]) {
             hasPosition[operator] = true;
@@ -97,7 +96,6 @@ contract CdpEngineHandler is Test {
         cdpEngine.closePosition();
         hasPosition[operator] = false;
         // Remove operator from active users array
-        console.log("close");
 
         vm.stopPrank();
     }
@@ -129,7 +127,6 @@ contract CdpEngineHandler is Test {
             // Attempt liquidation
             cdpEngine.liquidate(positionOwner);
             hasPosition[positionOwner] = false;
-            console.log("liquidation");
             vm.stopPrank();
         }
     }

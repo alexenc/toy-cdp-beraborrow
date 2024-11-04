@@ -99,7 +99,6 @@ contract ToyCdpTest is Test {
         // Change interest rate from 5% to 3%
         vm.stopPrank();
         address USER2 = makeAddr("user2");
-        vm.startPrank(USER2);
 
         cdpEngine.updateInterestRate(3);
         // Create a second user to open position and trigger interest accounting

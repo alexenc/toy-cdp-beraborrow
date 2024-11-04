@@ -17,11 +17,6 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  */
 contract ToyCDPEngine is Ownable {
     using SafeERC20 for IERC20;
-    ///////////////
-    // ERRORS   //
-    ///////////////
-
-    error TOYCDPEngine_moreThanZero();
 
     /*
      * @notice struct that represents a user position inside the system
@@ -40,7 +35,7 @@ contract ToyCDPEngine is Ownable {
 
     modifier moreThanZero(uint256 amount) {
         if (amount <= 0) {
-            revert TOYCDPEngine_moreThanZero();
+            revert("amount must be more than zero");
         }
         _;
     }
@@ -101,6 +96,21 @@ contract ToyCDPEngine is Ownable {
     //////////////
     // External //
     //////////////
+    /**
+     * @notice Opens a new CDP position by depositing collateral and minting stablecoin debt
+     * @dev Follows CEI pattern: Checks -> Effects -> Interactions
+     * @dev Interest index is updated before position creation
+     * @dev Position must maintain minimum collateralization ratio (MCR)
+     * @dev User must have approved sufficient WETH tokens as collateral
+     * @param _amount Amount of WETH collateral to deposit
+     * @param _debtAmount Amount of stablecoin debt to mint
+     * @dev Emits a PositionCreated event on successful creation
+     * @dev Reverts if:
+     *      - Amount is zero
+     *      - User already has an open position
+     *      - Resulting collateral ratio would be below MCR
+     *      - Insufficient WETH allowance
+     */
     function openPosition(
         uint256 _amount,
         uint256 _debtAmount
@@ -140,7 +150,16 @@ contract ToyCDPEngine is Ownable {
     }
 
     /**
-     * @notice close a user position repaying back its debt + interest and getting back its collateral
+     * @notice Closes a user's CDP position by repaying debt and redeeming collateral
+     * @dev Follows CEI pattern: Checks -> Effects -> Interactions
+     * @dev Interest is accrued before closing to ensure accurate debt calculation
+     * @dev Position must be above MCR (Minimum Collateralization Ratio) to be closed
+     * @dev User must have approved sufficient STABLE tokens to cover position debt
+     * @dev Emits a PosotionClosed event on successful closure
+     * @dev Reverts if:
+     *      - User has no open position
+     *      - Position is below MCR
+     *      - Insufficient STABLE token allowance
      */
     function closePosition() external {
         _updateGlobalInterestIndex();
@@ -176,10 +195,13 @@ contract ToyCDPEngine is Ownable {
         emit PosotionClosed(msg.sender, userCollateral, userDebt);
     }
 
-    /*
-     *  @notice function to liquidate insolvent positions, maxrepayamount to cover mev slippage
-     * @param positionToLiquidate user position to be liquidated
-     * @paramz maxrepayAmount Stable amount to be paid by liquidator
+    /**
+     * @notice Liquidates an undercollateralized position, allowing liquidator to repay the debt and receive collateral
+     * @dev The liquidator must have approved sufficient STABLE tokens to cover the position's debt
+     * @dev Position must be below MCR (Minimum Collateralization Ratio) to be liquidatable
+     * @dev Interest is accrued before liquidation to ensure accurate debt calculation
+     * @dev Follows CEI pattern: Checks -> Effects -> Interactions
+     * @param positionToLiquidate Address of the position owner to be liquidated
      */
     function liquidate(address positionToLiquidate) external {
         require(
@@ -299,9 +321,12 @@ contract ToyCDPEngine is Ownable {
     }
 
     /**
-     * @notice function that updates the global interest index
-     * and the last interest update.
-     *
+     * @notice Updates the global interest index based on time elapsed since last update
+     * @dev Uses simple interest formula: principal * (1 + rate * time)
+     * @dev Interest rate is in percentage terms (e.g. 5 for 5%) and scaled by 100
+     * @dev All calculations use 1e18 precision scaling to avoid rounding errors
+     * @dev Formula: interestFactor = 1e18 + ((rate * timeElapsed * 1e18) / (365 days * 100))
+     * @dev New index = (oldIndex * interestFactor) / 1e18
      */
     function _updateGlobalInterestIndex() internal {
         // Calculate time elapsed since last interest update
@@ -322,9 +347,18 @@ contract ToyCDPEngine is Ownable {
     }
 
     /**
-     * @notice function that updates a user's debt with accrued interest
-     * updates the user position with new debt amount and interest index
-     * returns the debt the user has with interest applied
+     * @notice Updates a user's debt by applying accrued interest based on the global interest index
+     * @dev Uses the formula: currentDebt = originalDebt * (currentIndex / userLastIndex)
+     * @dev If user has no debt, returns 0 without any updates
+     * @param user The address of the user whose debt to update
+     * @return The user's current debt amount after applying accrued interest
+     *
+     * This function:
+     * 1. Retrieves the user's position
+     * 2. If user has no debt, returns 0
+     * 3. Calculates new debt by scaling original debt by ratio of current/last index
+     * 4. Updates position with new debt and current index
+     * 5. Returns the updated debt amount
      */
     function _accrueUserInterest(address user) internal returns (uint256) {
         Position storage position = userPositions[user];
@@ -340,6 +374,13 @@ contract ToyCDPEngine is Ownable {
         return currentDebt;
     }
 
+    /**
+     * @notice Checks if a position is eligible for liquidation based on its collateral ratio
+     * @dev Uses the minimum collateralization ratio (MCR) as the liquidation threshold
+     * @param collateralValue The USD value of the collateral in the position
+     * @param debtAmount The amount of debt in the position
+     * @return bool True if position can be liquidated (collateral ratio < MCR), false otherwise
+     */
     function _isLiquidatable(
         uint256 collateralValue,
         uint256 debtAmount
