@@ -25,7 +25,7 @@ update:; forge update
 
 build:; forge build
 
-test :; forge test 
+test :; forge test -vvv
 
 coverage :; forge coverage --report debug > coverage-report.txt
 

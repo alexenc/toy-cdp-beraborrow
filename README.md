@@ -121,7 +121,7 @@ To run invariant test:
 
 To run unit test:
 
-`forge test -vvv`
+`forge test --match-contract "ToyCdpTest" -vvv`
 
 ## Potential economic flaws and possible ways to fix them
 
